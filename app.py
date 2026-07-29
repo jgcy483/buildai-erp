@@ -413,8 +413,8 @@ def activity():
     return page("فعالیت‌ها", """
     <div class="card"><h2>گزارش فعالیت کاربران</h2><table><tr><th>کاربر</th><th>عملیات</th><th>جزئیات</th><th>زمان</th></tr>
     {% for x in rows %}<tr><td>{{x.full_name or '-'}}</td><td>{{x.action}}</td><td>{{x.details}}</td><td>{{x.created_at}}</td></tr>{% endfor %}
-    </table></div>""", rows=rows)
-
+    </table></div>""", rows=
+    init_db()
 if __name__ == "__main__":
     init_db()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)), debug=False)
