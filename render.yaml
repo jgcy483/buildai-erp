@@ -1,9 +1,5 @@
 services:
-  - type: web
-    name: buildai-erp
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
-    envVars:
-      - key: SECRET_KEY
-        generateValue: true
+- type: web
+  env: python
+  buildCommand: pip install -r requirements.txt
+  startCommand: gunicorn app:app
