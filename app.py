@@ -1,11 +1,11 @@
-from flask import Flask, request, redirect, url_for, session, render_template_string, flash
-import sqlite3, os, hashlib, secrets
+from flask import Flask, request, redirect, url_for, session, render_template_string, flash, Response
+import sqlite3, os, hashlib, secrets, csv, io
 from datetime import datetime, date
 from functools import wraps
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(APP_DIR, "buildai.db")
-VERSION = "1.1"
+VERSION = "1.2"
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "buildai-change-this-secret")
 
@@ -83,6 +83,40 @@ def init_db():
         total REAL NOT NULL DEFAULT 0, paid_amount REAL NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'unpaid', created_by INTEGER, created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS suppliers(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, phone TEXT,
+        email TEXT, address TEXT, category TEXT, balance REAL NOT NULL DEFAULT 0,
+        notes TEXT, created_by INTEGER, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS employees(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT NOT NULL, phone TEXT,
+        job_title TEXT, salary_type TEXT NOT NULL DEFAULT 'monthly', salary_rate REAL NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 1, notes TEXT, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS payroll(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, period TEXT NOT NULL,
+        base_amount REAL NOT NULL DEFAULT 0, bonus REAL NOT NULL DEFAULT 0, deduction REAL NOT NULL DEFAULT 0,
+        net_amount REAL NOT NULL DEFAULT 0, paid_date TEXT, status TEXT NOT NULL DEFAULT 'unpaid',
+        notes TEXT, created_by INTEGER, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS inventory(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, item_name TEXT NOT NULL, unit TEXT NOT NULL DEFAULT 'pcs',
+        quantity REAL NOT NULL DEFAULT 0, min_quantity REAL NOT NULL DEFAULT 0, unit_cost REAL NOT NULL DEFAULT 0,
+        supplier_id INTEGER, location TEXT, notes TEXT, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS inventory_movements(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER NOT NULL, movement_type TEXT NOT NULL,
+        quantity REAL NOT NULL, project_id INTEGER, note TEXT, user_id INTEGER, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS accounts(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, account_type TEXT NOT NULL DEFAULT 'cash',
+        opening_balance REAL NOT NULL DEFAULT 0, notes TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS account_transactions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL, transaction_type TEXT NOT NULL,
+        amount REAL NOT NULL, reference_type TEXT, reference_id INTEGER, description TEXT,
+        transaction_date TEXT NOT NULL, created_by INTEGER, created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS activity(
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, action TEXT NOT NULL,
         details TEXT, created_at TEXT NOT NULL
@@ -101,6 +135,9 @@ def init_db():
     if not conn.execute("SELECT id FROM users WHERE username='admin'").fetchone():
         conn.execute("INSERT INTO users(full_name,username,password_hash,role,created_at) VALUES(?,?,?,?,?)",
                      ("مالک / Owner", "admin", hash_password("123456"), "admin", now()))
+    if not conn.execute("SELECT id FROM accounts LIMIT 1").fetchone():
+        conn.execute("INSERT INTO accounts(name,account_type,opening_balance,notes,active,created_at) VALUES(?,?,?,?,1,?)",
+                     ("صندوق اصلی / Main Cash", "cash", 0, "حساب پیش‌فرض", now()))
     conn.commit(); conn.close()
 
 
@@ -154,7 +191,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:10px;bord
 BASE = """<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{title}} | BuildAI ERP</title>""" + STYLE + """</head><body>
 {% if session.get('user_id') %}<header><div class="inner"><div style="display:flex;justify-content:space-between"><div class="brand">BuildAI ERP <span class="version">v{{version}}</span></div><div>{{session.get('full_name')}}</div></div><div class="nav">
 <a href="{{url_for('dashboard')}}">داشبورد / Dashboard</a><a href="{{url_for('projects')}}">پروژه‌ها / Projects</a><a href="{{url_for('customers')}}">مشتریان / Customers</a>
-<a href="{{url_for('contracts')}}">قراردادها / Contracts</a><a href="{{url_for('invoices')}}">فاکتورها / Invoices</a><a href="{{url_for('new_expense')}}">هزینه / Expense</a><a href="{{url_for('new_income')}}">درآمد / Income</a><a href="{{url_for('new_report')}}">گزارش روزانه</a>
+<a href="{{url_for('contracts')}}">قراردادها / Contracts</a><a href="{{url_for('invoices')}}">فاکتورها / Invoices</a><a href="{{url_for('suppliers')}}">تأمین‌کنندگان</a><a href="{{url_for('inventory')}}">انبار</a><a href="{{url_for('employees')}}">کارکنان</a><a href="{{url_for('accounts')}}">صندوق و بانک</a><a href="{{url_for('financial_report')}}">گزارش مالی</a><a href="{{url_for('new_expense')}}">هزینه / Expense</a><a href="{{url_for('new_income')}}">درآمد / Income</a><a href="{{url_for('new_report')}}">گزارش روزانه</a>
 {% if session.get('role') in ['admin','manager','accountant'] %}<a href="{{url_for('approvals')}}">تأیید هزینه‌ها</a>{% endif %}{% if session.get('role') == 'admin' %}<a href="{{url_for('users')}}">کاربران</a><a href="{{url_for('activity')}}">فعالیت‌ها</a>{% endif %}<a href="{{url_for('logout')}}">خروج</a></div></div></header>{% endif %}
 <div class="wrap">{% with messages=get_flashed_messages() %}{% for m in messages %}<div class="flash">{{m}}</div>{% endfor %}{% endwith %}{{body|safe}}</div></body></html>"""
 
@@ -321,6 +358,107 @@ def users():
 def activity():
     c=get_db(); rows=c.execute("SELECT a.*,u.full_name FROM activity a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 200").fetchall(); c.close()
     return page("فعالیت‌ها","""<div class="card"><h2>گزارش فعالیت کاربران</h2><table><tr><th>کاربر</th><th>عملیات</th><th>جزئیات</th><th>زمان</th></tr>{% for x in rows %}<tr><td>{{x.full_name or '-'}}</td><td>{{x.action}}</td><td>{{x.details}}</td><td>{{x.created_at}}</td></tr>{% endfor %}</table></div>""",rows=rows)
+
+@app.route("/suppliers", methods=["GET","POST"])
+@login_required
+@role_required("admin","manager","accountant")
+def suppliers():
+    c=get_db()
+    if request.method=="POST":
+        c.execute("INSERT INTO suppliers(name,phone,email,address,category,balance,notes,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(request.form["name"],request.form.get("phone",""),request.form.get("email",""),request.form.get("address",""),request.form.get("category","مصالح"),float(request.form.get("balance") or 0),request.form.get("notes",""),session["user_id"],now()))
+        c.commit(); log_action("create_supplier",request.form["name"]); flash("تأمین‌کننده ثبت شد")
+    rows=c.execute("SELECT * FROM suppliers ORDER BY id DESC").fetchall(); c.close()
+    return page("تأمین‌کنندگان", """<div class='card'><h2>تأمین‌کننده جدید / New Supplier</h2><form method='post'><div class='row3'><div><label>نام</label><input name='name' required></div><div><label>تلفن</label><input name='phone'></div><div><label>دسته‌بندی</label><input name='category' placeholder='مصالح، ابزار، حمل'></div></div><div class='row'><div><label>ایمیل</label><input name='email' type='email'></div><div><label>مانده اولیه AED</label><input name='balance' type='number' step='0.01'></div></div><div><label>آدرس</label><input name='address'></div><div><label>یادداشت</label><textarea name='notes'></textarea></div><button class='btn'>ثبت</button></form></div><div class='card section'><h2>لیست تأمین‌کنندگان</h2><table><tr><th>نام</th><th>تلفن</th><th>دسته</th><th>مانده</th><th>یادداشت</th></tr>{% for x in rows %}<tr><td>{{x.name}}</td><td>{{x.phone}}</td><td>{{x.category}}</td><td>{{x.balance|money}}</td><td>{{x.notes}}</td></tr>{% endfor %}</table></div>""",rows=rows)
+
+@app.route("/employees", methods=["GET","POST"])
+@login_required
+@role_required("admin","manager","accountant")
+def employees():
+    c=get_db()
+    if request.method=="POST":
+        c.execute("INSERT INTO employees(full_name,phone,job_title,salary_type,salary_rate,active,notes,created_at) VALUES(?,?,?,?,?,1,?,?)",(request.form["full_name"],request.form.get("phone",""),request.form.get("job_title",""),request.form.get("salary_type","monthly"),float(request.form.get("salary_rate") or 0),request.form.get("notes",""),now()))
+        c.commit(); log_action("create_employee",request.form["full_name"]); flash("کارمند ثبت شد")
+    rows=c.execute("SELECT * FROM employees ORDER BY active DESC,id DESC").fetchall(); c.close()
+    return page("کارکنان", """<div class='card'><h2>کارمند جدید / New Employee</h2><form method='post'><div class='row3'><div><label>نام کامل</label><input name='full_name' required></div><div><label>تلفن</label><input name='phone'></div><div><label>سمت</label><input name='job_title'></div></div><div class='row'><div><label>نوع حقوق</label><select name='salary_type'><option value='monthly'>ماهیانه</option><option value='daily'>روزانه</option><option value='hourly'>ساعتی</option></select></div><div><label>نرخ حقوق AED</label><input name='salary_rate' type='number' step='0.01'></div></div><div><label>یادداشت</label><textarea name='notes'></textarea></div><button class='btn'>ثبت کارمند</button></form></div><div class='card section'><h2>کارکنان</h2><table><tr><th>نام</th><th>سمت</th><th>نوع</th><th>نرخ</th><th></th></tr>{% for x in rows %}<tr><td>{{x.full_name}}</td><td>{{x.job_title}}</td><td>{{x.salary_type}}</td><td>{{x.salary_rate|money}}</td><td><a class='btn sm' href='{{url_for("new_payroll",employee_id=x.id)}}'>ثبت حقوق</a></td></tr>{% endfor %}</table></div>""",rows=rows)
+
+@app.route("/payroll/new/<int:employee_id>", methods=["GET","POST"])
+@login_required
+@role_required("admin","accountant")
+def new_payroll(employee_id):
+    c=get_db(); emp=c.execute("SELECT * FROM employees WHERE id=?",(employee_id,)).fetchone()
+    if not emp: c.close(); return redirect(url_for("employees"))
+    if request.method=="POST":
+        base=float(request.form.get("base_amount") or 0); bonus=float(request.form.get("bonus") or 0); deduction=float(request.form.get("deduction") or 0); net=base+bonus-deduction
+        c.execute("INSERT INTO payroll(employee_id,period,base_amount,bonus,deduction,net_amount,paid_date,status,notes,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(employee_id,request.form["period"],base,bonus,deduction,net,request.form.get("paid_date",""),request.form.get("status","unpaid"),request.form.get("notes",""),session["user_id"],now()))
+        c.commit(); c.close(); log_action("create_payroll",emp["full_name"]); flash("حقوق ثبت شد"); return redirect(url_for("employees"))
+    c.close()
+    return page("ثبت حقوق", """<div class='card'><h2>ثبت حقوق {{emp.full_name}}</h2><form method='post'><div class='row3'><div><label>دوره</label><input name='period' placeholder='2026-07' required></div><div><label>حقوق پایه AED</label><input name='base_amount' type='number' step='0.01' value='{{emp.salary_rate}}'></div><div><label>پاداش AED</label><input name='bonus' type='number' step='0.01' value='0'></div></div><div class='row3'><div><label>کسری AED</label><input name='deduction' type='number' step='0.01' value='0'></div><div><label>تاریخ پرداخت</label><input name='paid_date' type='date'></div><div><label>وضعیت</label><select name='status'><option value='unpaid'>پرداخت‌نشده</option><option value='paid'>پرداخت‌شده</option></select></div></div><div><label>یادداشت</label><textarea name='notes'></textarea></div><button class='btn'>ثبت حقوق</button></form></div>""",emp=emp)
+
+@app.route("/inventory", methods=["GET","POST"])
+@login_required
+def inventory():
+    c=get_db()
+    if request.method=="POST" and session.get("role") in ["admin","manager","accountant"]:
+        c.execute("INSERT INTO inventory(item_name,unit,quantity,min_quantity,unit_cost,supplier_id,location,notes,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",(request.form["item_name"],request.form.get("unit","pcs"),float(request.form.get("quantity") or 0),float(request.form.get("min_quantity") or 0),float(request.form.get("unit_cost") or 0),request.form.get("supplier_id") or None,request.form.get("location",""),request.form.get("notes",""),now()))
+        c.commit(); log_action("create_inventory_item",request.form["item_name"]); flash("کالای انبار ثبت شد")
+    rows=c.execute("SELECT i.*,s.name supplier_name FROM inventory i LEFT JOIN suppliers s ON s.id=i.supplier_id ORDER BY i.id DESC").fetchall(); suppliers_rows=c.execute("SELECT id,name FROM suppliers ORDER BY name").fetchall(); c.close()
+    return page("انبار", """{% if session.get('role') in ['admin','manager','accountant'] %}<div class='card'><h2>کالای جدید / New Stock Item</h2><form method='post'><div class='row3'><div><label>نام کالا</label><input name='item_name' required></div><div><label>واحد</label><input name='unit' value='pcs'></div><div><label>موجودی اولیه</label><input name='quantity' type='number' step='0.01'></div></div><div class='row3'><div><label>حداقل موجودی</label><input name='min_quantity' type='number' step='0.01'></div><div><label>قیمت واحد AED</label><input name='unit_cost' type='number' step='0.01'></div><div><label>تأمین‌کننده</label><select name='supplier_id'><option value=''>-</option>{% for s in suppliers %}<option value='{{s.id}}'>{{s.name}}</option>{% endfor %}</select></div></div><div class='row'><div><label>محل انبار</label><input name='location'></div><div><label>یادداشت</label><input name='notes'></div></div><button class='btn'>ثبت کالا</button></form></div>{% endif %}<div class='card section'><h2>موجودی انبار</h2><table><tr><th>کالا</th><th>موجودی</th><th>ارزش</th><th>تأمین‌کننده</th><th>وضعیت</th><th></th></tr>{% for x in rows %}<tr><td>{{x.item_name}}</td><td>{{x.quantity}} {{x.unit}}</td><td>{{(x.quantity*x.unit_cost)|money}}</td><td>{{x.supplier_name or '-'}}</td><td>{% if x.quantity <= x.min_quantity %}<span class='badge bad'>کمبود</span>{% else %}<span class='badge good'>موجود</span>{% endif %}</td><td><a class='btn sm' href='{{url_for("inventory_move",item_id=x.id)}}'>ورود/خروج</a></td></tr>{% endfor %}</table></div>""",rows=rows,suppliers=suppliers_rows)
+
+@app.route("/inventory/move/<int:item_id>", methods=["GET","POST"])
+@login_required
+@role_required("admin","manager","accountant")
+def inventory_move(item_id):
+    c=get_db(); item=c.execute("SELECT * FROM inventory WHERE id=?",(item_id,)).fetchone()
+    if not item: c.close(); return redirect(url_for("inventory"))
+    if request.method=="POST":
+        qty=float(request.form["quantity"]); typ=request.form["movement_type"]; delta=qty if typ=="in" else -qty
+        if item["quantity"]+delta < 0: flash("موجودی کافی نیست"); c.close(); return redirect(url_for("inventory_move",item_id=item_id))
+        c.execute("UPDATE inventory SET quantity=quantity+?,updated_at=? WHERE id=?",(delta,now(),item_id))
+        c.execute("INSERT INTO inventory_movements(item_id,movement_type,quantity,project_id,note,user_id,created_at) VALUES(?,?,?,?,?,?,?)",(item_id,typ,qty,request.form.get("project_id") or None,request.form.get("note",""),session["user_id"],now()))
+        c.commit(); c.close(); log_action("inventory_"+typ,item["item_name"]); flash("حرکت انبار ثبت شد"); return redirect(url_for("inventory"))
+    projects=project_list(); c.close()
+    return page("حرکت انبار", """<div class='card'><h2>{{item.item_name}} - موجودی {{item.quantity}} {{item.unit}}</h2><form method='post'><div class='row3'><div><label>نوع</label><select name='movement_type'><option value='in'>ورود به انبار</option><option value='out'>خروج برای پروژه</option></select></div><div><label>مقدار</label><input name='quantity' type='number' min='0.01' step='0.01' required></div><div><label>پروژه</label><select name='project_id'><option value=''>-</option>{% for p in projects %}<option value='{{p.id}}'>{{p.name}}</option>{% endfor %}</select></div></div><div><label>توضیح</label><textarea name='note'></textarea></div><button class='btn'>ثبت</button></form></div>""",item=item,projects=projects)
+
+@app.route("/accounts", methods=["GET","POST"])
+@login_required
+@role_required("admin","accountant")
+def accounts():
+    c=get_db()
+    if request.method=="POST":
+        c.execute("INSERT INTO accounts(name,account_type,opening_balance,notes,active,created_at) VALUES(?,?,?,?,1,?)",(request.form["name"],request.form.get("account_type","cash"),float(request.form.get("opening_balance") or 0),request.form.get("notes",""),now())); c.commit(); flash("حساب ثبت شد")
+    rows=c.execute("SELECT a.*, a.opening_balance + COALESCE(SUM(CASE WHEN t.transaction_type='in' THEN t.amount ELSE -t.amount END),0) current_balance FROM accounts a LEFT JOIN account_transactions t ON t.account_id=a.id GROUP BY a.id ORDER BY a.id").fetchall(); c.close()
+    return page("صندوق و بانک", """<div class='card'><h2>حساب جدید / New Account</h2><form method='post'><div class='row3'><div><label>نام حساب</label><input name='name' required></div><div><label>نوع</label><select name='account_type'><option value='cash'>صندوق</option><option value='bank'>بانک</option><option value='card'>کارت</option></select></div><div><label>مانده اولیه AED</label><input name='opening_balance' type='number' step='0.01'></div></div><div><label>یادداشت</label><input name='notes'></div><button class='btn'>ثبت حساب</button></form></div><div class='grid section'>{% for x in rows %}<a class='card quick' href='{{url_for("account_transaction",account_id=x.id)}}'><div class='muted'>{{x.account_type}}</div><h3>{{x.name}}</h3><div class='big'>{{x.current_balance|money}}</div></a>{% endfor %}</div>""",rows=rows)
+
+@app.route("/account/<int:account_id>/transaction", methods=["GET","POST"])
+@login_required
+@role_required("admin","accountant")
+def account_transaction(account_id):
+    c=get_db(); acc=c.execute("SELECT * FROM accounts WHERE id=?",(account_id,)).fetchone()
+    if not acc: c.close(); return redirect(url_for("accounts"))
+    if request.method=="POST":
+        c.execute("INSERT INTO account_transactions(account_id,transaction_type,amount,reference_type,description,transaction_date,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)",(account_id,request.form["transaction_type"],float(request.form["amount"]),"manual",request.form.get("description",""),request.form.get("transaction_date") or date.today().isoformat(),session["user_id"],now())); c.commit(); flash("تراکنش ثبت شد")
+    rows=c.execute("SELECT * FROM account_transactions WHERE account_id=? ORDER BY transaction_date DESC,id DESC LIMIT 100",(account_id,)).fetchall(); c.close()
+    return page("تراکنش حساب", """<div class='card'><h2>{{acc.name}}</h2><form method='post'><div class='row3'><div><label>نوع</label><select name='transaction_type'><option value='in'>واریز</option><option value='out'>برداشت</option></select></div><div><label>مبلغ AED</label><input name='amount' type='number' step='0.01' required></div><div><label>تاریخ</label><input name='transaction_date' type='date' value='{{today}}'></div></div><div><label>شرح</label><input name='description'></div><button class='btn'>ثبت تراکنش</button></form></div><div class='card section'><table><tr><th>تاریخ</th><th>نوع</th><th>شرح</th><th>مبلغ</th></tr>{% for x in rows %}<tr><td>{{x.transaction_date}}</td><td>{{'واریز' if x.transaction_type=='in' else 'برداشت'}}</td><td>{{x.description}}</td><td>{{x.amount|money}}</td></tr>{% endfor %}</table></div>""",acc=acc,rows=rows,today=date.today().isoformat())
+
+@app.route("/financial-report")
+@login_required
+@role_required("admin","manager","accountant")
+def financial_report():
+    c=get_db(); income=c.execute("SELECT COALESCE(SUM(amount),0) s FROM incomes").fetchone()["s"]; expense=c.execute("SELECT COALESCE(SUM(amount),0) s FROM expenses WHERE status='approved'").fetchone()["s"]; payroll_total=c.execute("SELECT COALESCE(SUM(net_amount),0) s FROM payroll WHERE status='paid'").fetchone()["s"]; receivable=c.execute("SELECT COALESCE(SUM(total-paid_amount),0) s FROM invoices").fetchone()["s"]; inventory_value=c.execute("SELECT COALESCE(SUM(quantity*unit_cost),0) s FROM inventory").fetchone()["s"]
+    by_category=c.execute("SELECT category,SUM(amount) total FROM expenses WHERE status='approved' GROUP BY category ORDER BY total DESC").fetchall(); by_project=c.execute("SELECT p.name,COALESCE((SELECT SUM(amount) FROM incomes i WHERE i.project_id=p.id),0) income,COALESCE((SELECT SUM(amount) FROM expenses e WHERE e.project_id=p.id AND e.status='approved'),0) expense FROM projects p ORDER BY p.id DESC").fetchall(); c.close()
+    return page("گزارش مالی", """<div class='grid'><div class='card'><div class='muted'>درآمد</div><div class='big'>{{income|money}}</div></div><div class='card'><div class='muted'>هزینه پروژه‌ها</div><div class='big'>{{expense|money}}</div></div><div class='card'><div class='muted'>حقوق پرداخت‌شده</div><div class='big'>{{payroll|money}}</div></div><div class='card'><div class='muted'>سود پس از حقوق</div><div class='big'>{{(income-expense-payroll)|money}}</div></div></div><div class='grid section'><div class='card'><div class='muted'>مطالبات</div><div class='big'>{{receivable|money}}</div></div><div class='card'><div class='muted'>ارزش انبار</div><div class='big'>{{inventory_value|money}}</div></div><a class='card quick' href='{{url_for("export_finance_csv")}}'><h3>دانلود گزارش CSV</h3><div class='muted'>Export financial data</div></a></div><div class='grid3 section'><div class='card'><h2>هزینه بر اساس دسته</h2><table>{% for x in by_category %}<tr><td>{{x.category}}</td><td>{{x.total|money}}</td></tr>{% endfor %}</table></div><div class='card' style='grid-column:span 2'><h2>سود پروژه‌ها</h2><table><tr><th>پروژه</th><th>درآمد</th><th>هزینه</th><th>سود</th></tr>{% for x in by_project %}<tr><td>{{x.name}}</td><td>{{x.income|money}}</td><td>{{x.expense|money}}</td><td>{{(x.income-x.expense)|money}}</td></tr>{% endfor %}</table></div></div>""",income=income,expense=expense,payroll=payroll_total,receivable=receivable,inventory_value=inventory_value,by_category=by_category,by_project=by_project)
+
+@app.route("/export/finance.csv")
+@login_required
+@role_required("admin","accountant")
+def export_finance_csv():
+    c=get_db(); output=io.StringIO(); w=csv.writer(output); w.writerow(["Type","Date","Project","Description","Amount AED","Status"])
+    for r in c.execute("SELECT i.income_date d,p.name project,i.description,i.amount FROM incomes i LEFT JOIN projects p ON p.id=i.project_id ORDER BY i.id"):
+        w.writerow(["Income",r["d"],r["project"] or "",r["description"],r["amount"],"recorded"])
+    for r in c.execute("SELECT e.expense_date d,p.name project,e.description,e.amount,e.status FROM expenses e LEFT JOIN projects p ON p.id=e.project_id ORDER BY e.id"):
+        w.writerow(["Expense",r["d"],r["project"] or "",r["description"],r["amount"],r["status"]])
+    c.close(); data='\ufeff'+output.getvalue()
+    return Response(data,mimetype="text/csv; charset=utf-8",headers={"Content-Disposition":"attachment; filename=buildai-finance.csv"})
 
 init_db()
 if __name__=="__main__": app.run(host="0.0.0.0",port=int(os.environ.get("PORT",5000)),debug=False)
