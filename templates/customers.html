@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Customers - BuildAI ERP{% endblock %}
+{% block content %}
+<h1>Customer Management</h1>
+<section class="two-column">
+<form class="form-card" method="post">
+  <h2>Add Customer</h2>
+  <label>Customer Name<input name="name" required></label>
+  <label>Phone<input name="phone"></label>
+  <label>Rating<select name="rating"><option value="5">5 Stars</option><option value="4">4 Stars</option><option value="3">3 Stars</option><option value="2">2 Stars</option><option value="1">1 Star</option></select></label>
+  <button class="primary-btn">Save Customer</button>
+</form>
+
+<section class="section-card">
+  <h2>Customer List</h2>
+  {% for customer in customers %}
+  <article class="table-row">
+    <div><strong>{{ customer.name }}</strong><small>{{ customer.phone or "No phone" }} · {{ "★" * customer.rating }}</small></div>
+    <form method="post" action="{{ url_for('delete_customer', customer_id=customer.id) }}"><button class="danger-btn">Delete</button></form>
+  </article>
+  {% endfor %}
+</section>
+</section>
+{% endblock %}

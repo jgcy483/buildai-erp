@@ -1,8 +1,47 @@
 <!doctype html>
-<html><head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="stylesheet" href="/static/css/style.css">
-<title>BuildAI ERP</title>
-</head><body>{% block content %}{% endblock %}
-<script src="/static/js/app.js"></script>
-</body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{% block title %}BuildAI ERP{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">🏗️ BuildAI ERP</div>
+    <nav>
+      <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      <a href="{{ url_for('projects') }}">Projects</a>
+      <a href="{{ url_for('customers') }}">Customers</a>
+    </nav>
+  </aside>
+
+  <section class="workspace">
+    <header class="topbar">
+      <button class="icon-btn" id="menuButton">☰</button>
+      <div><strong>BuildAI ERP v2.0.3</strong><small>Construction Management</small></div>
+      <button class="personal-btn" id="personalButton">Personal</button>
+    </header>
+
+    <main class="content">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, message in messages %}
+          <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+  </section>
+
+  <aside class="personal-panel" id="personalPanel">
+    <div class="panel-head"><strong>Personal Account</strong><button class="icon-btn" id="closePersonal">×</button></div>
+    <div class="personal-card"><span>Today Income</span><b>AED 2,500</b></div>
+    <div class="personal-card"><span>Today Expense</span><b>AED 840</b></div>
+    <div class="personal-card"><span>Today Profit</span><b>AED 1,660</b></div>
+    <div class="personal-card"><span>Balance</span><b>AED 28,400</b></div>
+  </aside>
+</div>
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

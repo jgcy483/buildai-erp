@@ -1,5 +1,31 @@
-{% extends 'base.html' %}
+{% extends "base.html" %}
+{% block title %}Dashboard - BuildAI ERP{% endblock %}
 {% block content %}
-<h1>BuildAI ERP v2.0.2</h1>
-<div class="card">Dashboard Ready</div>
+<section class="hero">
+  <p class="eyebrow">EXECUTIVE DASHBOARD</p>
+  <h1>Company Overview</h1>
+  <p>Live summary of your construction business.</p>
+</section>
+
+<section class="stats-grid">
+  <article class="stat-card"><span>Income Today</span><b>AED {{ "{:,.0f}".format(stats.income_today) }}</b></article>
+  <article class="stat-card"><span>Expense Today</span><b>AED {{ "{:,.0f}".format(stats.expense_today) }}</b></article>
+  <article class="stat-card"><span>Profit Today</span><b>AED {{ "{:,.0f}".format(stats.profit_today) }}</b></article>
+  <article class="stat-card"><span>Active Projects</span><b>{{ stats.active_projects }}</b></article>
+  <article class="stat-card"><span>Customers</span><b>{{ stats.customers }}</b></article>
+  <article class="stat-card"><span>Pending Invoices</span><b>{{ stats.pending_invoices }}</b></article>
+</section>
+
+<section class="section-card">
+  <div class="section-head"><h2>Recent Projects</h2><a href="{{ url_for('projects') }}">View all</a></div>
+  {% for project in projects %}
+  <article class="project-row">
+    <div><strong>{{ project.name }}</strong><small>{{ project.customer }} · {{ project.status }}</small></div>
+    <div class="progress-wrap">
+      <div class="progress-track"><div class="progress-bar" style="width:{{ project.progress }}%"></div></div>
+      <span>{{ project.progress }}%</span>
+    </div>
+  </article>
+  {% endfor %}
+</section>
 {% endblock %}
